@@ -318,6 +318,9 @@ class MobiBook:
                     elif type == 404 and size == 9:
                         # make sure text to speech is enabled
                         self.patchSection(0, '\0', 16 + self.mobi_length + pos + 8)
+                        elif type == 208:
+                            # Remove watermark and keys
+                            self.patchSection(0, '\0'*(size-8), 16 + self.mobi_length + pos + 8)
                     # print type, size, content, content.encode('hex')
                     pos += size
         except:
@@ -438,8 +441,8 @@ class MobiBook:
         if 406 in self.meta_array:
             data406 = self.meta_array[406]
             val406, = struct.unpack('>Q',data406)
-            if val406 != 0:
-                raise DrmException(u"Cannot decode library or rented ebooks.")
+            #if val406 != 0:
+                #raise DrmException(u"Cannot decode library or rented ebooks.")
 
         goodpids = []
         for pid in pidlist:
