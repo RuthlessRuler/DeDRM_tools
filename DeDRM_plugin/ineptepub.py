@@ -2,25 +2,18 @@
 # -*- coding: utf-8 -*-
 
 from __future__ import with_statement
+from __future__ import absolute_import
+from __future__ import print_function
 
 # ineptepub.pyw, version 6.6
-# Copyright © 2009-2010 by i♥cabbages
+# Copyright © 2009-2020 by Apprentice Harper et al.
 
 # Released under the terms of the GNU General Public Licence, version 3
 # <http://www.gnu.org/licenses/>
 
+# Original script by i♥cabbages
 # Modified 2010–2013 by some_updates, DiapDealer and Apprentice Alf
-# Modified 2015–2017 by Apprentice Harper
-
-# Windows users: Before running this program, you must first install Python 2.7
-#   from <http://www.python.org/download/> and PyCrypto from
-#   <http://www.voidspace.org.uk/python/modules.shtml#pycrypto> (make sure to
-#   install the version for Python 2.7).  Save this script file as
-#   ineptepub.pyw and double-click on it to run it.
-#
-# Mac OS X users: Save this script file as ineptepub.pyw.  You can run this
-#   program from the command line (pythonw ineptepub.pyw) or by double-clicking
-#   it when it has been associated with PythonLauncher.
+# Modified 2015–2020 by Apprentice Harper et al.
 
 # Revision history:
 #   1 - Initial release
@@ -43,14 +36,17 @@ from __future__ import with_statement
 #   6.4 - Remove erroneous check on DER file sanity
 #   6.5 - Completely remove erroneous check on DER file sanity
 #   6.6 - Import tkFileDialog, don't assume something else will import it.
+#   6.7 - Add Python 3 compatibility while still working with Python 2.7
 
 """
 Decrypt Adobe Digital Editions encrypted ePub books.
 """
 
 __license__ = 'GPL v3'
-__version__ = "6.6"
+__version__ = "6.7"
 
+import six
+from six.moves import range
 import sys
 import os
 import traceback
@@ -59,6 +55,7 @@ import zipfile
 from zipfile import ZipInfo, ZipFile, ZIP_STORED, ZIP_DEFLATED
 from contextlib import closing
 import xml.etree.ElementTree as etree
+import base64
 
 # Wrap a stream so that output gets flushed immediately
 # and also make sure that any unicode strings get
@@ -70,7 +67,7 @@ class SafeUnbuffered:
         if self.encoding == None:
             self.encoding = "utf-8"
     def write(self, data):
-        if isinstance(data,unicode):
+        if isinstance(data,six.text_type):
             data = data.encode(self.encoding,"replace")
         self.stream.write(data)
         self.stream.flush()
@@ -111,13 +108,13 @@ def unicode_argv():
             # Remove Python executable and commands if present
             start = argc.value - len(sys.argv)
             return [argv[i] for i in
-                    xrange(start, argc.value)]
+                    range(start, argc.value)]
         return [u"ineptepub.py"]
     else:
         argvencoding = sys.stdin.encoding
         if argvencoding == None:
             argvencoding = "utf-8"
-        return [arg if (type(arg) == unicode) else unicode(arg,argvencoding) for arg in sys.argv]
+        return [arg if (type(arg) == six.text_type) else six.text_type(arg,argvencoding) for arg in sys.argv]
 
 
 class ADEPTError(Exception):
@@ -205,7 +202,7 @@ def _load_crypto_libcrypto():
 
         def decrypt(self, data):
             out = create_string_buffer(len(data))
-            iv = ("\x00" * self._blocksize)
+            iv = (b"\x00" * self._blocksize)
             rv = AES_cbc_encrypt(data, out, len(data), self._key, iv, 0)
             if rv == 0:
                 raise ADEPTError('AES decryption failed')
@@ -315,12 +312,12 @@ def _load_crypto_pycrypto():
     class RSA(object):
         def __init__(self, der):
             key = ASN1Parser([ord(x) for x in der])
-            key = [key.getChild(x).value for x in xrange(1, 4)]
+            key = [key.getChild(x).value for x in range(1, 4)]
             key = [self.bytesToNumber(v) for v in key]
             self._rsa = _RSA.construct(key)
 
         def bytesToNumber(self, bytes):
-            total = 0L
+            total = 0
             for byte in bytes:
                 total = (total << 8) + byte
             return total
@@ -366,7 +363,7 @@ class Decryptor(object):
     def decompress(self, bytes):
         dc = zlib.decompressobj(-15)
         bytes = dc.decompress(bytes)
-        ex = dc.decompress('Z') + dc.flush()
+        ex = dc.decompress(b'Z') + dc.flush()
         if ex:
             bytes = bytes + ex
         return bytes
@@ -374,7 +371,11 @@ class Decryptor(object):
     def decrypt(self, path, data):
         if path.encode('utf-8') in self._encrypted:
             data = self._aes.decrypt(data)[16:]
-            data = data[:-ord(data[-1])]
+            if type(data[-1]) != int:
+                place = ord(data[-1])
+            else:
+                place = data[-1]
+            data = data[:-place]
             data = self.decompress(data)
         return data
 
@@ -405,7 +406,7 @@ def decryptBook(userkey, inpath, outpath):
         namelist = set(inf.namelist())
         if 'META-INF/rights.xml' not in namelist or \
            'META-INF/encryption.xml' not in namelist:
-            print u"{0:s} is DRM-free.".format(os.path.basename(inpath))
+            print(u"{0:s} is DRM-free.".format(os.path.basename(inpath)))
             return 1
         for name in META_NAMES:
             namelist.remove(name)
@@ -415,12 +416,14 @@ def decryptBook(userkey, inpath, outpath):
             expr = './/%s' % (adept('encryptedKey'),)
             bookkey = ''.join(rights.findtext(expr))
             if len(bookkey) != 172:
-                print u"{0:s} is not a secure Adobe Adept ePub.".format(os.path.basename(inpath))
+                print(u"{0:s} is not a secure Adobe Adept ePub.".format(os.path.basename(inpath)))
                 return 1
-            bookkey = rsa.decrypt(bookkey.decode('base64'))
+            bookkey = bookkey.encode('ascii')
+            bookkey = base64.b64decode(bookkey)
+            bookkey = rsa.decrypt(bookkey)
             # Padded as per RSAES-PKCS1-v1_5
-            if bookkey[-17] != '\x00':
-                print u"Could not decrypt {0:s}. Wrong key".format(os.path.basename(inpath))
+            if bookkey[-17] != '\x00' and bookkey[-17] != 0:
+                print(u"Could not decrypt {0:s}. Wrong key".format(os.path.basename(inpath)))
                 return 2
             encryption = inf.read('META-INF/encryption.xml')
             decryptor = Decryptor(bookkey[-16:], encryption)
@@ -461,7 +464,7 @@ def decryptBook(userkey, inpath, outpath):
                         pass
                     outf.writestr(zi, decryptor.decrypt(path, data))
         except:
-            print u"Could not decrypt {0:s} because of an exception:\n{1:s}".format(os.path.basename(inpath), traceback.format_exc())
+            print(u"Could not decrypt {0:s} because of an exception:\n{1:s}".format(os.path.basename(inpath), traceback.format_exc()))
             return 2
     return 0
 
@@ -472,90 +475,90 @@ def cli_main():
     argv=unicode_argv()
     progname = os.path.basename(argv[0])
     if len(argv) != 4:
-        print u"usage: {0} <keyfile.der> <inbook.epub> <outbook.epub>".format(progname)
+        print(u"usage: {0} <keyfile.der> <inbook.epub> <outbook.epub>".format(progname))
         return 1
     keypath, inpath, outpath = argv[1:]
     userkey = open(keypath,'rb').read()
     result = decryptBook(userkey, inpath, outpath)
     if result == 0:
-        print u"Successfully decrypted {0:s} as {1:s}".format(os.path.basename(inpath),os.path.basename(outpath))
+        print(u"Successfully decrypted {0:s} as {1:s}".format(os.path.basename(inpath),os.path.basename(outpath)))
     return result
 
 def gui_main():
     try:
-        import Tkinter
-        import Tkconstants
-        import tkFileDialog
-        import tkMessageBox
+        import six.moves.tkinter
+        import six.moves.tkinter_constants
+        import six.moves.tkinter_filedialog
+        import six.moves.tkinter_messagebox
         import traceback
     except:
         return cli_main()
 
-    class DecryptionDialog(Tkinter.Frame):
+    class DecryptionDialog(six.moves.tkinter.Frame):
         def __init__(self, root):
-            Tkinter.Frame.__init__(self, root, border=5)
-            self.status = Tkinter.Label(self, text=u"Select files for decryption")
-            self.status.pack(fill=Tkconstants.X, expand=1)
-            body = Tkinter.Frame(self)
-            body.pack(fill=Tkconstants.X, expand=1)
-            sticky = Tkconstants.E + Tkconstants.W
+            six.moves.tkinter.Frame.__init__(self, root, border=5)
+            self.status = six.moves.tkinter.Label(self, text=u"Select files for decryption")
+            self.status.pack(fill=six.moves.tkinter_constants.X, expand=1)
+            body = six.moves.tkinter.Frame(self)
+            body.pack(fill=six.moves.tkinter_constants.X, expand=1)
+            sticky = six.moves.tkinter_constants.E + six.moves.tkinter_constants.W
             body.grid_columnconfigure(1, weight=2)
-            Tkinter.Label(body, text=u"Key file").grid(row=0)
-            self.keypath = Tkinter.Entry(body, width=30)
+            six.moves.tkinter.Label(body, text=u"Key file").grid(row=0)
+            self.keypath = six.moves.tkinter.Entry(body, width=30)
             self.keypath.grid(row=0, column=1, sticky=sticky)
             if os.path.exists(u"adeptkey.der"):
                 self.keypath.insert(0, u"adeptkey.der")
-            button = Tkinter.Button(body, text=u"...", command=self.get_keypath)
+            button = six.moves.tkinter.Button(body, text=u"...", command=self.get_keypath)
             button.grid(row=0, column=2)
-            Tkinter.Label(body, text=u"Input file").grid(row=1)
-            self.inpath = Tkinter.Entry(body, width=30)
+            six.moves.tkinter.Label(body, text=u"Input file").grid(row=1)
+            self.inpath = six.moves.tkinter.Entry(body, width=30)
             self.inpath.grid(row=1, column=1, sticky=sticky)
-            button = Tkinter.Button(body, text=u"...", command=self.get_inpath)
+            button = six.moves.tkinter.Button(body, text=u"...", command=self.get_inpath)
             button.grid(row=1, column=2)
-            Tkinter.Label(body, text=u"Output file").grid(row=2)
-            self.outpath = Tkinter.Entry(body, width=30)
+            six.moves.tkinter.Label(body, text=u"Output file").grid(row=2)
+            self.outpath = six.moves.tkinter.Entry(body, width=30)
             self.outpath.grid(row=2, column=1, sticky=sticky)
-            button = Tkinter.Button(body, text=u"...", command=self.get_outpath)
+            button = six.moves.tkinter.Button(body, text=u"...", command=self.get_outpath)
             button.grid(row=2, column=2)
-            buttons = Tkinter.Frame(self)
+            buttons = six.moves.tkinter.Frame(self)
             buttons.pack()
-            botton = Tkinter.Button(
+            botton = six.moves.tkinter.Button(
                 buttons, text=u"Decrypt", width=10, command=self.decrypt)
-            botton.pack(side=Tkconstants.LEFT)
-            Tkinter.Frame(buttons, width=10).pack(side=Tkconstants.LEFT)
-            button = Tkinter.Button(
+            botton.pack(side=six.moves.tkinter_constants.LEFT)
+            six.moves.tkinter.Frame(buttons, width=10).pack(side=six.moves.tkinter_constants.LEFT)
+            button = six.moves.tkinter.Button(
                 buttons, text=u"Quit", width=10, command=self.quit)
-            button.pack(side=Tkconstants.RIGHT)
+            button.pack(side=six.moves.tkinter_constants.RIGHT)
 
         def get_keypath(self):
-            keypath = tkFileDialog.askopenfilename(
+            keypath = six.moves.tkinter_filedialog.askopenfilename(
                 parent=None, title=u"Select Adobe Adept \'.der\' key file",
                 defaultextension=u".der",
                 filetypes=[('Adobe Adept DER-encoded files', '.der'),
                            ('All Files', '.*')])
             if keypath:
                 keypath = os.path.normpath(keypath)
-                self.keypath.delete(0, Tkconstants.END)
+                self.keypath.delete(0, six.moves.tkinter_constants.END)
                 self.keypath.insert(0, keypath)
             return
 
         def get_inpath(self):
-            inpath = tkFileDialog.askopenfilename(
+            inpath = six.moves.tkinter_filedialog.askopenfilename(
                 parent=None, title=u"Select ADEPT-encrypted ePub file to decrypt",
                 defaultextension=u".epub", filetypes=[('ePub files', '.epub')])
             if inpath:
                 inpath = os.path.normpath(inpath)
-                self.inpath.delete(0, Tkconstants.END)
+                self.inpath.delete(0, six.moves.tkinter_constants.END)
                 self.inpath.insert(0, inpath)
             return
 
         def get_outpath(self):
-            outpath = tkFileDialog.asksaveasfilename(
+            outpath = six.moves.tkinter_filedialog.asksaveasfilename(
                 parent=None, title=u"Select unencrypted ePub file to produce",
                 defaultextension=u".epub", filetypes=[('ePub files', '.epub')])
             if outpath:
                 outpath = os.path.normpath(outpath)
-                self.outpath.delete(0, Tkconstants.END)
+                self.outpath.delete(0, six.moves.tkinter_constants.END)
                 self.outpath.insert(0, outpath)
             return
 
@@ -579,7 +582,7 @@ def gui_main():
             self.status['text'] = u"Decrypting..."
             try:
                 decrypt_status = decryptBook(userkey, inpath, outpath)
-            except Exception, e:
+            except Exception as e:
                 self.status['text'] = u"Error: {0}".format(e.args[0])
                 return
             if decrypt_status == 0:
@@ -587,11 +590,11 @@ def gui_main():
             else:
                 self.status['text'] = u"The was an error decrypting the file."
 
-    root = Tkinter.Tk()
+    root = six.moves.tkinter.Tk()
     root.title(u"Adobe Adept ePub Decrypter v.{0}".format(__version__))
     root.resizable(True, False)
     root.minsize(300, 0)
-    DecryptionDialog(root).pack(fill=Tkconstants.X, expand=1)
+    DecryptionDialog(root).pack(fill=six.moves.tkinter_constants.X, expand=1)
     root.mainloop()
     return 0
 
